@@ -232,12 +232,35 @@ def get_avatars():
 def get_sessions():
     """Fetch all sessions with avatar info from the Supabase database."""
     try:
-        # Fetch sessions with avatar details via join
-        response = supabase.table('sessions').select(
-            'id, created_at, avatar_id, video_url, audio_url, emotion_report, avatars(id, name, image_url)'
-        ).order('created_at', desc=True).execute()
-        
-        sessions = response.data if response.data else []
+        # First, try to fetch sessions with avatar join
+        try:
+            response = supabase.table('sessions').select(
+                'id, created_at, avatar_id, video_url, audio_url, emotion_report, avatarslink_id(id, name, image_url)'
+            ).order('created_at', desc=True).execute()
+            
+            sessions = response.data if response.data else []
+        except Exception as join_error:
+            # If join fails (no FK relationship), fetch separately and join manually
+            print(f"Join failed, fetching separately: {str(join_error)}")
+            
+            # Fetch all sessions
+            sessions_response = supabase.table('sessions').select(
+                'id, created_at, avatar_id, video_url, audio_url, emotion_report'
+            ).order('created_at', desc=True).execute()
+            
+            sessions = sessions_response.data if sessions_response.data else []
+            
+            # Fetch all avatars
+            avatars_response = supabase.table('avatars').select('id, name, image_url').execute()
+            avatars = {avatar['id']: avatar for avatar in (avatars_response.data or [])}
+            
+            # Manually join sessions with avatars
+            for session in sessions:
+                avatar_id = session.get('avatar_id')
+                if avatar_id and avatar_id in avatars:
+                    session['avatars'] = avatars[avatar_id]
+                else:
+                    session['avatars'] = None
         
         return {
             "message": "Sessions fetched successfully",
@@ -257,16 +280,47 @@ def get_sessions():
 def get_session(session_id: str):
     """Fetch a single session by ID with full details."""
     try:
-        response = supabase.table('sessions').select(
-            'id, created_at, avatar_id, video_url, audio_url, emotion_report, avatars(id, name, image_url)'
-        ).eq('id', session_id).single().execute()
+        # First, try to fetch session with avatar join
+        try:
+            response = supabase.table('sessions').select(
+                'id, created_at, avatar_id, video_url, audio_url, emotion_report, avatars(id, name, image_url)'
+            ).eq('id', session_id).single().execute()
+            
+            session = response.data
+        except Exception as join_error:
+            # If join fails (no FK relationship), fetch separately
+            print(f"Join failed, fetching separately: {str(join_error)}")
+            
+            # Fetch session
+            session_response = supabase.table('sessions').select(
+                'id, created_at, avatar_id, video_url, audio_url, emotion_report'
+            ).eq('id', session_id).single().execute()
+            
+            session = session_response.data
+            
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+            
+            # Fetch avatar if avatar_id exists
+            avatar_id = session.get('avatar_id')
+            if avatar_id:
+                avatar_response = supabase.table('avatars').select(
+                    'id, name, image_url'
+                ).eq('id', avatar_id).single().execute()
+                
+                if avatar_response.data:
+                    session['avatars'] = avatar_response.data
+                else:
+                    session['avatars'] = None
+            else:
+                session['avatars'] = None
         
-        if not response.data:
+        if not session:
             raise HTTPException(status_code=404, detail="Session not found")
         
         return {
             "message": "Session fetched successfully",
-            "session": response.data
+            "session": session
         }
     
     except HTTPException as he:
